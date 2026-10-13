@@ -68,8 +68,21 @@ class GitHubClient:
     def repo_url(self, full_name: str) -> str:
         return f"https://github.com/{full_name}.git"
 
-    def _auth_args(self) -> list[str]:
-        return ["-c", f"http.https://github.com/.extraheader=Authorization: Bearer {self.token}"]
+    def _git_env(self) -> dict[str, str]:
+        """Build env with a GIT_ASKPASS helper that feeds the token without embedding it in the URL."""
+        askpass = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", prefix="askpass_", delete=False
+        )
+        askpass.write("#!/bin/sh\n")
+        askpass.write(f'echo "{self.token}"\n')
+        askpass.close()
+        os.chmod(askpass.name, 0o700)
+        env = {
+            "GIT_ASKPASS": askpass.name,
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+        self._askpass_path = askpass.name
+        return env
 
     # ---- issues / PRs / comments ---------------------------------------
     def get_issue(self, full_name: str, number: int) -> dict[str, Any]:
@@ -158,15 +171,21 @@ class GitHubClient:
     ) -> str:
         """Clone base_ref into a temp dir, create+checkout branch_name. Returns path."""
         workspace = tempfile.mkdtemp(prefix="agent_")
+        self._askpass_path: str = ""
         try:
             url = self.repo_url(full_name)
-            self._run(["git"] + self._auth_args() + ["clone", "--quiet", "--depth", "1", "--branch", base_ref, url, workspace])
+            git_env = self._git_env()
+            self._run(["git", "clone", "--quiet", "--depth", "1", "--branch", base_ref, url, workspace], env=git_env)
             self._run(["git", "-C", workspace, "checkout", "-b", branch_name])
             self._run(["git", "-C", workspace, "config", "user.name", "coding-agent"])
             self._run(["git", "-C", workspace, "config", "user.email", "agent@local"])
         except Exception:
             shutil.rmtree(workspace, ignore_errors=True)
+            if self._askpass_path:
+                os.remove(self._askpass_path)
             raise
+        if self._askpass_path:
+            os.remove(self._askpass_path)
         log.info("Cloned %s@%s -> %s (branch %s)", full_name, base_ref, workspace, branch_name)
         return workspace
 
@@ -180,9 +199,15 @@ class GitHubClient:
 
     def push(self, full_name: str, workspace: str, branch_name: str) -> None:
         url = self.repo_url(full_name)
-        self._run(
-            ["git"] + self._auth_args() + ["-C", workspace, "push", "--quiet", url, f"HEAD:{branch_name}"]
-        )
+        git_env = self._git_env()
+        try:
+            self._run(
+                ["git", "-C", workspace, "push", "--quiet", url, f"HEAD:{branch_name}"],
+                env=git_env,
+            )
+        finally:
+            if self._askpass_path:
+                os.remove(self._askpass_path)
 
     def create_pr(
         self, full_name: str, head: str, base: str, title: str, body: str
