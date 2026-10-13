@@ -15,7 +15,7 @@ It can:
 ```
 GitHub webhook ──┐                         ┌──> OpenRouter (LLM)
                  ├──> FastAPI agent loop ──┤
-Telegram  <─────┘   (tools: read/edit/grep/run) └──> git push + open PR
+Telegram  <─────┘   (tools: read/edit/grep/run/web) └──> git push + open PR
 ```
 
 Triggers:
@@ -23,6 +23,7 @@ Triggers:
   Also: label an issue `agent` to auto-fix it; label a PR `agent:review` to auto-review.
 - **Telegram**: send `/fix <owner/repo> <issue#>`, `/review <owner/repo> <pr#>`,
   `/answer <owner/repo> <issue#>`. The agent sends progress updates to your chat.
+  Use `/tasks` to see active and recent task progress.
 
 ## Project layout
 
@@ -30,7 +31,7 @@ Triggers:
 app/
   main.py          FastAPI: health + GitHub webhooks, wires Telegram
   agent.py         agentic loop: review_pr / fix_issue / answer_issue
-  tools.py         tool schemas + workspace executor (read/edit/grep/run)
+  tools.py         tool schemas + workspace executor (read/edit/grep/run/web)
   github_client.py clone, branch, commit, push, PRs, comments, diffs
   llm.py           OpenRouter client (OpenAI SDK, tool-calling)
   telegram_bot.py  polling bot: outbound updates + inbound commands
@@ -89,5 +90,14 @@ For local GitHub webhooks use `ngrok http 8000` and point the webhook at the ngr
 - The agent clones to a temp dir and pushes a **new branch**; it never pushes to your default branch.
 - `run_command` executes shell in the cloned workspace (lint/tests). Keep `MAX_ITERATIONS`
   bounded; the default is 40.
+- The `web_fetch` tool blocks localhost, private IP ranges, and cloud metadata endpoints
+  (SSRF guard). `web_search` queries DuckDuckGo only.
 - Model choice matters a lot for coding quality — prefer a strong coding model.
 - This is a personal tool: the PAT is powerful, so scope it to specific repos.
+
+See [SECURITY.md](SECURITY.md) for the full security model and hardening recommendations.
+
+## Contributing & community
+- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, dev workflow, PR checklist
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community standards
+- [SECURITY.md](SECURITY.md) — reporting vulnerabilities and the security model

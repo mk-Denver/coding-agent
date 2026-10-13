@@ -43,14 +43,10 @@ def chat(
         kwargs["tool_choice"] = "auto"
     try:
         resp = client.chat.completions.create(**kwargs)
-    except (
-        openai.RateLimitError,
-        openai.APIConnectionError,
-        openai.APITimeoutError,
-        openai.APIStatusError,
-        openai.AuthenticationError,
-        openai.BadRequestError,
-    ) as err:
+    except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as err:
+        log.warning("LLM transient error: model=%s msgs=%d err=%s", model, len(messages), err)
+        raise RuntimeError(f"LLM transient error for model={model}") from err
+    except (openai.APIStatusError, openai.AuthenticationError, openai.BadRequestError) as err:
         log.error("LLM request failed: model=%s msgs=%d err=%s", model, len(messages), err)
         raise RuntimeError(f"LLM request failed for model={model}") from err
     if not resp.choices:

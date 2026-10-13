@@ -24,7 +24,8 @@ BASE_SYSTEM = (
     "- Prefer `edit_file` over `write_file` for small changes.\n"
     "- Always confirm an `old_string` is unique before editing.\n"
     "- Do not add comments unless asked. Match existing code style.\n"
-    "- When finished, call `done` with a concise summary.\n"
+    "- Call `done` with a concise summary as soon as you have completed the task.\n"
+    "- Do NOT call `run_command` more than 5 times total. If tests fail, inspect the code with `read_file` instead of blindly re-running.\n"
     "- Keep tool output small and focused."
 )
 
@@ -52,6 +53,8 @@ def _run_loop(
         {"role": "system", "content": system},
         {"role": "user", "content": task},
     ]
+    last_tool: str = ""
+    repeat_count: int = 0
     for i in range(1, settings.max_iterations + 1):
         msg = chat(client, settings.openrouter_model, messages, tools=TOOL_SCHEMAS)
         messages.append(msg.model_dump(exclude_none=True))  # type: ignore[arg-type]
@@ -73,7 +76,13 @@ def _run_loop(
                 args = json.loads(tc.function.arguments or "{}")
             except Exception as exc:  # noqa: BLE001
                 log.warning("failed to parse tool arguments for %s: %s", name, exc)
-                args = {}
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"error: invalid tool arguments JSON: {exc}"})
+                continue
+            if name == last_tool:
+                repeat_count += 1
+            else:
+                repeat_count = 0
+            last_tool = name
             _notify(notify, f"[{i}] tool: {name}")
             try:
                 result = execute(name, args)
@@ -88,6 +97,12 @@ def _run_loop(
                     "content": result,
                 }
             )
+            if repeat_count >= 3 and name != "done":
+                messages.append({
+                    "role": "user",
+                    "content": f"You have called `{name}` {repeat_count + 1} times in a row. If you have enough information, call `done` now with your summary. If not, try a different approach or tool.",
+                })
+                last_tool = ""
             if ctx.done:
                 for remaining in tool_calls[idx + 1:]:
                     messages.append(
@@ -129,6 +144,8 @@ def review_pr(
 
     # Clone base so review tools can read files.
     workspace = ""
+    ctx: ToolContext | None = None
+    review = ""
     try:
         workspace = gh.clone(repo, pr.base_ref, f"review-{pr.number}-{int(time.time())}-{uuid.uuid4().hex[:6]}")
         ctx = ToolContext(workspace=workspace)
@@ -137,7 +154,7 @@ def review_pr(
         if workspace:
             gh.cleanup(workspace)
 
-    if not ctx.done:
+    if ctx is None or not ctx.done:
         _notify(notify, f"PR #{pr_number}: agent did not finish review.")
         gh.post_comment(repo, pr_number, f"Agent could not complete the review within the iteration limit.\n\n{review}")
         return review
@@ -167,6 +184,8 @@ def fix_issue(
     )
     branch = f"agent/issue-{issue_number}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     workspace = ""
+    ctx: ToolContext | None = None
+    summary = ""
     try:
         workspace = gh.clone(repo, base_ref, branch)
         ctx = ToolContext(workspace=workspace)
@@ -179,7 +198,7 @@ def fix_issue(
             "with `run_command` if a toolchain is present. Keep changes focused."
         )
         summary = _run_loop(settings, gh, BASE_SYSTEM, task, ctx, notify)
-        if not ctx.done:
+        if ctx is None or not ctx.done:
             _notify(notify, f"Issue #{issue_number}: agent did not finish, skipping commit/push.")
             gh.post_comment(
                 repo, issue_number,
@@ -233,6 +252,8 @@ def answer_issue(
     )
     base_ref = _detect_default_branch(gh, repo)
     workspace = ""
+    ctx: ToolContext | None = None
+    answer = ""
     try:
         workspace = gh.clone(repo, base_ref, f"answer-{issue_number}-{int(time.time())}-{uuid.uuid4().hex[:6]}")
         ctx = ToolContext(workspace=workspace)
@@ -247,7 +268,7 @@ def answer_issue(
         if workspace:
             gh.cleanup(workspace)
 
-    if not ctx.done:
+    if ctx is None or not ctx.done:
         _notify(notify, f"Issue #{issue_number}: agent did not finish, not posting reply.")
         gh.post_comment(repo, issue_number, f"Agent could not complete the answer within the iteration limit.\n\n{answer}")
         return answer

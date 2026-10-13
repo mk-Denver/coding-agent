@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -38,6 +39,7 @@ class GitHubClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.token = settings.github_token
+        self._askpass_path: str = ""
         self.http = httpx.Client(
             base_url=API,
             headers={
@@ -70,19 +72,26 @@ class GitHubClient:
 
     def _git_env(self) -> dict[str, str]:
         """Build env with a GIT_ASKPASS helper that feeds the token without embedding it in the URL."""
+        if self._askpass_path and os.path.exists(self._askpass_path):
+            os.remove(self._askpass_path)
         askpass = tempfile.NamedTemporaryFile(
             mode="w", suffix=".sh", prefix="askpass_", delete=False
         )
-        askpass.write("#!/bin/sh\n")
-        askpass.write(f'echo "{self.token}"\n')
-        askpass.close()
-        os.chmod(askpass.name, 0o700)
-        env = {
+        try:
+            askpass.write("#!/bin/sh\n")
+            askpass.write(f"echo {shlex.quote(self.token)}\n")
+            askpass.close()
+            os.chmod(askpass.name, 0o700)
+        except Exception:
+            askpass.close()
+            if os.path.exists(askpass.name):
+                os.remove(askpass.name)
+            raise
+        self._askpass_path = askpass.name
+        return {
             "GIT_ASKPASS": askpass.name,
             "GIT_TERMINAL_PROMPT": "0",
         }
-        self._askpass_path = askpass.name
-        return env
 
     # ---- issues / PRs / comments ---------------------------------------
     def get_issue(self, full_name: str, number: int) -> dict[str, Any]:
@@ -120,10 +129,14 @@ class GitHubClient:
         r = self.http.get(f"/repos/{full_name}/pulls/{number}")
         r.raise_for_status()
         d = r.json()
-        diff_r = self.http.get(
-            f"/repos/{full_name}/pulls/{number}",
-            headers={"Accept": "application/vnd.github.diff"},
-        )
+        diff_url = d.get("diff_url")
+        if diff_url:
+            diff_r = self.http.get(diff_url)
+        else:
+            diff_r = self.http.get(
+                f"/repos/{full_name}/pulls/{number}",
+                headers={"Accept": "application/vnd.github.diff"},
+            )
         diff_r.raise_for_status()
         return PrInfo(
             number=number,

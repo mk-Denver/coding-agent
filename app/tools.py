@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import fnmatch
+import html
 import os
 import re
 import signal
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import quote_plus
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -148,6 +150,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 MAX_OUTPUT = 4000
 
+_BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]",
+                   "169.254.169.254", "metadata.google.internal"}
+
+
+def _is_blocked_url(url: str) -> bool:
+    """Block SSRF targets: localhost, link-local, private ranges, cloud metadata."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if host in _BLOCKED_HOSTS:
+            return True
+        if host.endswith(".local") or host.endswith(".internal"):
+            return True
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return True
+        except ValueError:
+            pass
+        return False
+    except Exception:
+        return True
+
 
 @dataclass
 class ToolContext:
@@ -237,7 +263,8 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 return "error: content is required"
             full = _safe_path(ctx.workspace, rel)
             os.makedirs(os.path.dirname(full) or ctx.workspace, exist_ok=True)
-            tmp = full + ".tmp"
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(full) or ctx.workspace, prefix=".agent-")
+            os.close(fd)
             try:
                 with open(tmp, "w", encoding="utf-8") as fh:
                     fh.write(content)
@@ -269,7 +296,8 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
             if count > 1:
                 return f"error: old_string found {count} times; provide more context to make it unique"
             content = content.replace(old, new, 1)
-            tmp = full + ".tmp"
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(full) or ctx.workspace, prefix=".agent-")
+            os.close(fd)
             try:
                 with open(tmp, "w", encoding="utf-8") as fh:
                     fh.write(content)
@@ -293,8 +321,9 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 "PATH": os.environ.get("PATH", ""),
                 "HOME": ctx.workspace,
                 "LANG": os.environ.get("LANG", "C.UTF-8"),
-                "TMPDIR": ctx.workspace,
+                "TMPDIR": os.path.join(ctx.workspace, ".agent-tmp"),
             }
+            os.makedirs(restricted_env["TMPDIR"], exist_ok=True)
             try:
                 proc = subprocess.Popen(
                     cmd,
@@ -313,6 +342,8 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 except subprocess.TimeoutExpired:
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     except OSError:
                         proc.kill()
                     try:
@@ -342,8 +373,8 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                     r.text, re.DOTALL,
                 ):
                     url = m.group(1)
-                    title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
-                    snippet = re.sub(r"<[^>]+>", "", m.group(3)).strip()
+                    title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+                    snippet = html.unescape(re.sub(r"<[^>]+>", "", m.group(3))).strip()
                     if url.startswith("//"):
                         url = "https:" + url
                     results.append(f"{title}\n  {url}\n  {snippet}")
@@ -359,6 +390,8 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 return "error: url is required"
             if not re.match(r"^https?://", url):
                 return "error: url must start with http:// or https://"
+            if _is_blocked_url(url):
+                return "error: fetching this host is not allowed"
             try:
                 with httpx.Client(timeout=30, follow_redirects=True) as c:
                     r = c.get(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -367,6 +400,7 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<[^>]+>", " ", text)
+                text = html.unescape(text)
                 text = re.sub(r"\s+", " ", text).strip()
                 return _truncate(text)
             except Exception as exc:  # noqa: BLE001

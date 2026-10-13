@@ -110,14 +110,17 @@ async def lifespan(_app: FastAPI):
     keepalive = asyncio.create_task(_keepalive())
     yield
     keepalive.cancel()
-    for t in list(_bg_tasks):
-        t.cancel()
-    if _bg_tasks:
-        await asyncio.gather(*_bg_tasks, return_exceptions=True)
-        _bg_tasks.clear()
-    if bridge is not None:
-        await bridge.stop()
-    ctx.gh.close()
+    try:
+        await asyncio.gather(keepalive, return_exceptions=True)
+        for t in list(_bg_tasks):
+            t.cancel()
+        if _bg_tasks:
+            await asyncio.gather(*_bg_tasks, return_exceptions=True)
+            _bg_tasks.clear()
+        if bridge is not None:
+            await bridge.stop()
+    finally:
+        ctx.gh.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -173,6 +176,8 @@ async def github_webhook(
                 _spawn(asyncio.to_thread(agent.review_pr, ctx.settings, ctx.gh, repo, number, ctx.notify))
             elif "answer" in text:
                 _spawn(asyncio.to_thread(agent.answer_issue, ctx.settings, ctx.gh, repo, number, ctx.notify))
+            elif "review" in text and not is_pr:
+                return {"status": "ignored"}
             else:
                 _spawn(asyncio.to_thread(agent.fix_issue, ctx.settings, ctx.gh, repo, number, ctx.notify))
             return {"status": "queued"}

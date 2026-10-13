@@ -13,7 +13,7 @@ def _get(key: str, default: str = "") -> str:
 def _get_int(key: str, default: int) -> int:
     try:
         return int(os.environ.get(key, str(default)))
-    except (TypeError, ValueError):
+    except ValueError:
         return default
 
 
@@ -65,5 +65,9 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> "Settings":
-    """Lazy singleton — loaded on first call, not at import time."""
+    """Lazy singleton — loaded on first call, not at import time.
+
+    Call ``get_settings.cache_clear()`` to pick up changed env vars
+    (e.g. between test cases or after a hot-reload).
+    """
     return Settings.load()

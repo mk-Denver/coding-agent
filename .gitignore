@@ -19,6 +19,7 @@ venv/
 # Environment files
 .env
 .env.*
+.envrc
 !.env.example
 
 # Secret/credential files
@@ -27,17 +28,13 @@ venv/
 *.p12
 *.pfx
 *.keystore
-.netrc
-.aws/
-.ssh/
-id_rsa
-id_rsa.pub
-id_ed25519
-id_ed25519.pub
-id_ecdsa
-id_ecdsa.pub
-id_dsa
-id_dsa.pub
+/.netrc
+/.aws/
+/.ssh/
+/.pypirc
+/.npmrc
+/.htpasswd
+credentials
 
 # Temp cloned workspaces created by tempfile.mkdtemp(prefix="agent_")
 agent_workspace/
