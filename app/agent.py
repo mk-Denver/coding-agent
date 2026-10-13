@@ -137,8 +137,10 @@ def review_pr(
         f"Base: {pr.base_ref} <- Head: {pr.head_ref}\n\n"
         f"Issue/body:\n{pr.body[:2000]}\n\n"
         f"Diff (truncated):\n```diff\n{diff_preview}\n```\n\n"
-        "Inspect referenced files with `read_file`/`search` in the workspace to understand context.\n"
-        "When done, call `done` with a markdown review covering: correctness, bugs, style, "
+        "Inspect referenced files with `read_file`/`search` in the workspace to understand context.\n\n"
+        "Use `review_comment` to add inline comments on specific files and line numbers "
+        "for issues you find at exact locations in the diff.\n\n"
+        "When done, call `done` with a markdown review summary covering: correctness, bugs, style, "
         "and concrete suggestions. Do not modify files."
     )
 
@@ -158,9 +160,12 @@ def review_pr(
         _notify(notify, f"PR #{pr_number}: agent did not finish review.")
         gh.post_comment(repo, pr_number, f"Agent could not complete the review within the iteration limit.\n\n{review}")
         return review
-    comment = f"### Agent review\n\n{review}"
-    gh.post_comment(repo, pr_number, comment)
-    _notify(notify, f"Posted review on PR #{pr_number}")
+    inline = ctx.inline_comments or []
+    body = f"### Agent review\n\n{review}"
+    if inline:
+        body += f"\n\n*{len(inline)} inline comment(s) below.*"
+    url = gh.post_review(repo, pr_number, body, pr.head_sha, inline_comments=inline)
+    _notify(notify, f"Posted review on PR #{pr_number} ({len(inline)} inline comments)")
     return review
 
 

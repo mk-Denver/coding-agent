@@ -137,6 +137,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "review_comment",
+            "description": "Add an inline review comment on a specific file and line of the PR diff. Use for pointing out specific issues at exact locations. Only works during PR review.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path in the repo, e.g. 'src/main.py'."},
+                    "line": {"type": "integer", "description": "Line number in the file to comment on."},
+                    "body": {"type": "string", "description": "The review comment text (markdown)."},
+                },
+                "required": ["path", "line", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "done",
             "description": "Signal that the task is complete. Provide a concise summary of what you did.",
             "parameters": {
@@ -181,6 +197,12 @@ class ToolContext:
     done: bool = False
     summary: str = ""
     commands_run: int = 0
+    inline_comments: list = None
+
+    def add_inline_comment(self, path: str, line: int, body: str) -> None:
+        if self.inline_comments is None:
+            self.inline_comments = []
+        self.inline_comments.append({"path": path, "line": line, "body": body})
 
 
 def _truncate(text: str) -> str:
@@ -405,6 +427,19 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 return _truncate(text)
             except Exception as exc:  # noqa: BLE001
                 return f"error: web_fetch failed: {exc}"
+
+        if name == "review_comment":
+            path = args.get("path")
+            line = args.get("line")
+            body = args.get("body")
+            if not path or not body or not line:
+                return "error: path, line, and body are required"
+            try:
+                line = int(line)
+            except (TypeError, ValueError):
+                return "error: line must be an integer"
+            ctx.add_inline_comment(path, line, body)
+            return f"queued inline comment on {path}:{line}"
 
         if name == "done":
             ctx.done = True

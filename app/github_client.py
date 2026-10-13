@@ -33,6 +33,7 @@ class PrInfo:
     base_ref: str
     diff: str
     author: str
+    head_sha: str
 
 
 class GitHubClient:
@@ -125,6 +126,43 @@ class GitHubClient:
         r.raise_for_status()
         log.info("Posted comment on %s#%d", full_name, number)
 
+    def post_review(
+        self,
+        full_name: str,
+        number: int,
+        body: str,
+        head_sha: str,
+        inline_comments: list[dict] | None = None,
+        event: str = "COMMENT",
+    ) -> str:
+        """Post a PR review with optional inline line-level comments.
+
+        inline_comments: list of {"path": str, "line": int, "body": str}
+        """
+        payload: dict[str, Any] = {
+            "body": body,
+            "event": event,
+            "commit_id": head_sha,
+        }
+        if inline_comments:
+            payload["comments"] = [
+                {
+                    "path": c["path"],
+                    "line": c["line"],
+                    "side": "RIGHT",
+                    "body": c["body"],
+                }
+                for c in inline_comments
+            ]
+        r = self.http.post(
+            f"/repos/{full_name}/pulls/{number}/reviews",
+            json=payload,
+        )
+        r.raise_for_status()
+        url = r.json().get("html_url", "")
+        log.info("Posted review on %s#%d (%d inline comments)", full_name, number, len(inline_comments or []))
+        return url
+
     def get_pr(self, full_name: str, number: int) -> PrInfo:
         r = self.http.get(f"/repos/{full_name}/pulls/{number}")
         r.raise_for_status()
@@ -146,6 +184,7 @@ class GitHubClient:
             base_ref=d.get("base", {}).get("ref", ""),
             diff=diff_r.text,
             author=d.get("user", {}).get("login", ""),
+            head_sha=d.get("head", {}).get("sha", ""),
         )
 
     def list_pr_files(self, full_name: str, number: int) -> list[dict[str, Any]]:
