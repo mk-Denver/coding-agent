@@ -5,9 +5,11 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from . import agent
@@ -34,6 +36,21 @@ def _spawn(coro: Awaitable) -> None:
             log.error("background task failed: %s", t.exception(), exc_info=t.exception())
 
     task.add_done_callback(_on_done)
+
+
+async def _keepalive() -> None:
+    """Ping our own health endpoint every 10 minutes to prevent Render free tier from sleeping."""
+    url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8000") + "/health"
+    while True:
+        try:
+            await asyncio.sleep(600)
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(url)
+                log.debug("keepalive: %s -> %s", url, r.status_code)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.debug("keepalive ping failed: %s", exc)
 
 
 def _verify(body: bytes, signature: str | None, secret: str) -> bool:
@@ -90,7 +107,9 @@ async def lifespan(_app: FastAPI):
         ctx.notify = lambda _msg: None
 
     log.info("Startup complete. valid=%s model=%s", s.is_valid, s.openrouter_model)
+    keepalive = asyncio.create_task(_keepalive())
     yield
+    keepalive.cancel()
     for t in list(_bg_tasks):
         t.cancel()
     if _bg_tasks:

@@ -58,8 +58,12 @@ requirements.txt
    `GITHUB_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
 4. Deploy. Confirm `/health` returns `{"config_valid": true}`.
 
-> The **free** Render plan spins down after inactivity, so webhooks can be missed while you
-> sleep. For reliable overnight runs use the **Starter** plan (~$7/mo, always-on).
+> **Keeping it awake on the free plan:** The app self-pings `/health` every 10 minutes to
+> delay Render's sleep timer. For full reliability, also set up a free external monitor
+> (e.g. [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) to
+> hit `https://<your-service>.onrender.com/health` every 5 minutes — only an external ping
+> can wake the service after it has already slept. For zero gaps, use the **Starter** plan
+> (~$7/mo, always-on).
 
 ### 3. Add the GitHub webhook
 Repo **Settings > Webhooks > Add webhook**:

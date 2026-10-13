@@ -20,15 +20,15 @@ def _get_int(key: str, default: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     # LLM
-    openrouter_api_key: str = field(repr=False)
-    openrouter_model: str = ""
+    openrouter_api_key: str = field(default="", repr=False)
+    openrouter_model: str = "openrouter/auto"
 
     # GitHub
-    github_token: str = field(repr=False)
-    github_webhook_secret: str = field(repr=False)
+    github_token: str = field(default="", repr=False)
+    github_webhook_secret: str = field(default="", repr=False)
 
     # Telegram
-    telegram_bot_token: str = field(repr=False)
+    telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = ""
 
     # Agent behavior

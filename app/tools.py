@@ -8,6 +8,9 @@ import signal
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import quote_plus
+
+import httpx
 
 from .logger import get_logger
 
@@ -98,6 +101,34 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "command": {"type": "string", "description": "Full shell command line."},
                 },
                 "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web via DuckDuckGo. Returns up to 8 results with title, URL, and snippet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch the content of a URL and return it as text (HTML stripped to readable text, truncated).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to fetch."},
+                },
+                "required": ["url"],
             },
         },
     },
@@ -291,6 +322,55 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                     return "error: command timed out (120s)"
             except Exception as exc:  # noqa: BLE001
                 return f"error: failed to run command: {exc}"
+
+        if name == "web_search":
+            query = args.get("query")
+            if not query:
+                return "error: query is required"
+            try:
+                with httpx.Client(timeout=30, follow_redirects=True) as c:
+                    r = c.get(
+                        "https://html.duckduckgo.com/html/",
+                        params={"q": query},
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    )
+                    r.raise_for_status()
+                results: list[str] = []
+                for m in re.finditer(
+                    r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?'
+                    r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                    r.text, re.DOTALL,
+                ):
+                    url = m.group(1)
+                    title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+                    snippet = re.sub(r"<[^>]+>", "", m.group(3)).strip()
+                    if url.startswith("//"):
+                        url = "https:" + url
+                    results.append(f"{title}\n  {url}\n  {snippet}")
+                    if len(results) >= 8:
+                        break
+                return _truncate("\n\n".join(results)) or "(no results)"
+            except Exception as exc:  # noqa: BLE001
+                return f"error: web_search failed: {exc}"
+
+        if name == "web_fetch":
+            url = args.get("url")
+            if not url:
+                return "error: url is required"
+            if not re.match(r"^https?://", url):
+                return "error: url must start with http:// or https://"
+            try:
+                with httpx.Client(timeout=30, follow_redirects=True) as c:
+                    r = c.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                    r.raise_for_status()
+                text = r.text
+                text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
+                text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+                text = re.sub(r"<[^>]+>", " ", text)
+                text = re.sub(r"\s+", " ", text).strip()
+                return _truncate(text)
+            except Exception as exc:  # noqa: BLE001
+                return f"error: web_fetch failed: {exc}"
 
         if name == "done":
             ctx.done = True
