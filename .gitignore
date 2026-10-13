@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Secret/credential files
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+.netrc
+.aws/
+.ssh/
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+id_ecdsa
+id_ecdsa.pub
+id_dsa
+id_dsa.pub
+
+# Temp cloned workspaces created by tempfile.mkdtemp(prefix="agent_")
+agent_workspace/
+agent_clone/
+
+# Logs
+*.log
