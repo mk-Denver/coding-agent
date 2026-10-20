@@ -34,6 +34,12 @@ def _spawn(coro: Awaitable) -> None:
             return
         if t.exception() is not None:
             log.error("background task failed: %s", t.exception(), exc_info=t.exception())
+            notify = getattr(ctx, "notify", None)
+            if notify is not None:
+                try:
+                    notify(f"Task failed: {t.exception()}")
+                except Exception:  # noqa: BLE001
+                    pass
 
     task.add_done_callback(_on_done)
 
@@ -64,12 +70,13 @@ def _verify(body: bytes, signature: str | None, secret: str) -> bool:
 
 
 class AppContext:
-    """Holds shared state wired at startup."""
+    """Holds shared state wired at startup. Defaults keep /health and other
+    endpoints responsive even before lifespan has finished running."""
 
-    settings: Settings
-    gh: GitHubClient
-    notify: Callable[[str], None]
-    bridge: Any  # TelegramBridge | None
+    settings: Settings = Settings()
+    gh: GitHubClient | None = None
+    notify: Callable[[str], None] = lambda _msg: None
+    bridge: Any = None
 
 
 ctx = AppContext()
@@ -182,11 +189,12 @@ async def github_webhook(
                 _spawn(asyncio.to_thread(agent.fix_issue, ctx.settings, ctx.gh, repo, number, ctx.notify))
             return {"status": "queued"}
 
-    # New PR opened: auto-review if labeled agent:review
-    if event == "pull_request" and payload.get("action") == "opened":
-        labels = [l.get("name", "") for l in payload.get("pull_request", {}).get("labels", [])]
+    # New PR opened, or agent:review label added: auto-review
+    if event == "pull_request" and payload.get("action") in ("opened", "labeled"):
+        pr = payload.get("pull_request", {})
+        labels = [l.get("name", "") for l in pr.get("labels", [])]
         if "agent:review" in labels:
-            number = payload.get("pull_request", {}).get("number")
+            number = pr.get("number")
             if not number:
                 return {"status": "ignored"}
             _spawn(asyncio.to_thread(agent.review_pr, ctx.settings, ctx.gh, repo, number, ctx.notify))

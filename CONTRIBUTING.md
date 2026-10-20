@@ -12,10 +12,14 @@ Thanks for your interest in contributing! This is a small project, so the proces
    ```
 3. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.txt -r requirements-dev.txt
    ```
 4. Copy `.env.example` to `.env` and fill in your credentials
-5. Run locally:
+5. Run tests:
+   ```bash
+   python -m pytest
+   ```
+6. Run locally:
    ```bash
    uvicorn app.main:app --reload --port 8000
    ```
@@ -52,6 +56,7 @@ Good first issues:
 ## Pull Request Checklist
 
 - [ ] Code compiles: `python -m py_compile app/*.py`
+- [ ] Tests pass: `python -m pytest`
 - [ ] No secrets or tokens committed
 - [ ] `.env.example` updated if new env vars were added
 - [ ] `render.yaml` updated if deployment config changed

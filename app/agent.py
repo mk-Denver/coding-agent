@@ -55,11 +55,15 @@ def _run_loop(
     ]
     last_tool: str = ""
     repeat_count: int = 0
+    last_text: str = ""
     for i in range(1, settings.max_iterations + 1):
         msg = chat(client, settings.openrouter_model, messages, tools=TOOL_SCHEMAS)
         messages.append(msg.model_dump(exclude_none=True))  # type: ignore[arg-type]
         tool_calls = getattr(msg, "tool_calls", None) or []
         if not tool_calls:
+            content = getattr(msg, "content", None)
+            if isinstance(content, str) and content.strip():
+                last_text = content.strip()[:4000]
             messages.append({
                 "role": "user",
                 "content": "If you are finished, call the `done` tool with a summary. Otherwise continue using the available tools.",
@@ -112,7 +116,7 @@ def _run_loop(
         if ctx.done:
             break
     if not ctx.done:
-        ctx.summary = "(agent did not finish within iteration limit)"
+        ctx.summary = last_text or "(agent did not finish within iteration limit)"
     return ctx.summary
 
 

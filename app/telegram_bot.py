@@ -181,8 +181,10 @@ class TelegramBridge:
             await update.effective_message.reply_text("No active or recent tasks.")
             return
         lines: list[str] = []
-        for key, info in self.task_status.items():
-            status_icon = {"done": "✅", "failed": "❌", "working": "🔄"}.get(info["status"], "🔄")
+        with self._status_lock:
+            snapshot = list(self.task_status.items())
+        for key, info in snapshot:
+            status_icon = {"done": "✅", "failed": "❌", "cancelled": "❌", "working": "🔄"}.get(info["status"], "🔄")
             lines.append(f"{status_icon} {key}\n   tools run: {info['tools']}, last: {info['last_tool']}")
         await update.effective_message.reply_text("\n".join(lines))
 
@@ -217,6 +219,11 @@ class TelegramBridge:
                 self._tasks.discard(t)
                 with self._status_lock:
                     entry = self.task_status.get(task_key)
+                if entry is not None and not t.cancelled() and t.exception() is not None:
+                    log.error("dispatcher %s failed for %s#%s: %s", kind, repo, number, t.exception(), exc_info=t.exception())
+                    self.notify_sync(f"/{kind} {repo}#{number} failed: {t.exception()}")
+                with self._status_lock:
+                    entry = self.task_status.get(task_key)
                     if entry is None:
                         return
                     if t.cancelled():
@@ -224,7 +231,6 @@ class TelegramBridge:
                         return
                     if t.exception() is not None:
                         entry["status"] = "failed"
-                        log.error("dispatcher %s failed for %s#%s: %s", kind, repo, number, t.exception())
                     else:
                         entry["status"] = "done"
 

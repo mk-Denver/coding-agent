@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import fnmatch
 import html
+import ipaddress
 import os
 import re
 import signal
+import socket
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
-from urllib.parse import quote, urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -169,26 +171,61 @@ MAX_OUTPUT = 4000
 _BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]",
                    "169.254.169.254", "metadata.google.internal"}
 
+_MAX_FETCH_HOPS = 5
 
-def _is_blocked_url(url: str) -> bool:
-    """Block SSRF targets: localhost, link-local, private ranges, cloud metadata."""
+_UNSAFE_IP_ATTRS = ("is_private", "is_loopback", "is_link_local", "is_reserved", "is_multicast")
+
+
+def _ip_is_unsafe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if getattr(ip, "is_unspecified", False):
+        return True
+    # not is_global catches CGNAT (100.64/10), doc ranges, reserved, loopback,
+    # link-local and private space that stdlib does not all mark is_private.
+    return not ip.is_global or any(getattr(ip, attr, False) for attr in _UNSAFE_IP_ATTRS)
+
+
+def _host_is_unsafe(host: str) -> bool:
+    host = host.lower().strip(".")
+    if not host:
+        return True
+    if host in _BLOCKED_HOSTS:
+        return True
+    if host.endswith(".local") or host.endswith(".internal"):
+        return True
     try:
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        if host in _BLOCKED_HOSTS:
-            return True
-        if host.endswith(".local") or host.endswith(".internal"):
-            return True
-        import ipaddress
+        return _ip_is_unsafe(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return True
+    for info in infos:
         try:
-            ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            if _ip_is_unsafe(ipaddress.ip_address(info[4][0])):
                 return True
         except ValueError:
-            pass
-        return False
+            continue
+    return False
+
+
+def _is_blocked_url(url: str) -> bool:
+    """Block SSRF targets: localhost, link-local, private/reserved IPs, cloud
+    metadata, and hostnames that resolve to any of those (e.g. *.nip.io)."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return _host_is_unsafe(host)
     except Exception:
         return True
+
+
+def _url_error(url: str) -> str | None:
+    if not re.match(r"^https?://", url):
+        return "error: url must start with http:// or https://"
+    if _is_blocked_url(url):
+        return "error: fetching this host is not allowed"
+    return None
 
 
 @dataclass
@@ -197,11 +234,9 @@ class ToolContext:
     done: bool = False
     summary: str = ""
     commands_run: int = 0
-    inline_comments: list = None
+    inline_comments: list[dict[str, Any]] = field(default_factory=list)
 
     def add_inline_comment(self, path: str, line: int, body: str) -> None:
-        if self.inline_comments is None:
-            self.inline_comments = []
         self.inline_comments.append({"path": path, "line": line, "body": body})
 
 
@@ -355,7 +390,7 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    start_new_session=True,
+                    start_new_session=os.name == "posix",
                 )
                 try:
                     stdout, stderr = proc.communicate(timeout=120)
@@ -363,11 +398,11 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                     return f"[exit {proc.returncode}]\n{_truncate(out)}"
                 except subprocess.TimeoutExpired:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
+                        if os.name == "posix":
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                         proc.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
                     try:
                         proc.communicate(timeout=5)
                     except subprocess.TimeoutExpired:
@@ -410,14 +445,21 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
             url = args.get("url")
             if not url:
                 return "error: url is required"
-            if not re.match(r"^https?://", url):
-                return "error: url must start with http:// or https://"
-            if _is_blocked_url(url):
-                return "error: fetching this host is not allowed"
+            err = _url_error(url)
+            if err:
+                return err
             try:
-                with httpx.Client(timeout=30, follow_redirects=True) as c:
-                    r = c.get(url, headers={"User-Agent": "Mozilla/5.0"})
-                    r.raise_for_status()
+                current = url
+                with httpx.Client(timeout=30, follow_redirects=False) as c:
+                    for _ in range(_MAX_FETCH_HOPS):
+                        r = c.get(current, headers={"User-Agent": "Mozilla/5.0"})
+                        if not (r.is_redirect and r.headers.get("location")):
+                            break
+                        current = urljoin(current, r.headers.get("location"))
+                        err = _url_error(current)
+                        if err:
+                            return f"error: redirect target is not allowed: {current}"
+                r.raise_for_status()
                 text = r.text
                 text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)

@@ -40,7 +40,6 @@ class GitHubClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.token = settings.github_token
-        self._askpass_path: str = ""
         self.http = httpx.Client(
             base_url=API,
             headers={
@@ -71,10 +70,14 @@ class GitHubClient:
     def repo_url(self, full_name: str) -> str:
         return f"https://github.com/{full_name}.git"
 
-    def _git_env(self) -> dict[str, str]:
-        """Build env with a GIT_ASKPASS helper that feeds the token without embedding it in the URL."""
-        if self._askpass_path and os.path.exists(self._askpass_path):
-            os.remove(self._askpass_path)
+    def _make_git_env(self) -> tuple[dict[str, str], str]:
+        """Build a per-operation env with a GIT_ASKPASS helper that feeds the
+        token without embedding it in the URL.
+
+        Returns (env, askpass_path); the caller must delete askpass_path in a
+        finally block. State is not kept on self so concurrent git operations
+        never share (and clobber) one credential helper file.
+        """
         askpass = tempfile.NamedTemporaryFile(
             mode="w", suffix=".sh", prefix="askpass_", delete=False
         )
@@ -88,11 +91,15 @@ class GitHubClient:
             if os.path.exists(askpass.name):
                 os.remove(askpass.name)
             raise
-        self._askpass_path = askpass.name
-        return {
-            "GIT_ASKPASS": askpass.name,
-            "GIT_TERMINAL_PROMPT": "0",
-        }
+        return {"GIT_ASKPASS": askpass.name, "GIT_TERMINAL_PROMPT": "0"}, askpass.name
+
+    @staticmethod
+    def _rm(path: str) -> None:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
 
     # ---- issues / PRs / comments ---------------------------------------
     def get_issue(self, full_name: str, number: int) -> dict[str, Any]:
@@ -142,8 +149,9 @@ class GitHubClient:
         payload: dict[str, Any] = {
             "body": body,
             "event": event,
-            "commit_id": head_sha,
         }
+        if head_sha:
+            payload["commit_id"] = head_sha
         if inline_comments:
             payload["comments"] = [
                 {
@@ -223,23 +231,30 @@ class GitHubClient:
     ) -> str:
         """Clone base_ref into a temp dir, create+checkout branch_name. Returns path."""
         workspace = tempfile.mkdtemp(prefix="agent_")
-        self._askpass_path: str = ""
+        url = self.repo_url(full_name)
+        git_env, askpass = self._make_git_env()
         try:
-            url = self.repo_url(full_name)
-            git_env = self._git_env()
             self._run(["git", "clone", "--quiet", "--depth", "1", "--branch", base_ref, url, workspace], env=git_env)
             self._run(["git", "-C", workspace, "checkout", "-b", branch_name])
             self._run(["git", "-C", workspace, "config", "user.name", "coding-agent"])
             self._run(["git", "-C", workspace, "config", "user.email", "agent@local"])
+            self._add_git_excludes(workspace)
         except Exception:
             shutil.rmtree(workspace, ignore_errors=True)
-            if self._askpass_path:
-                os.remove(self._askpass_path)
             raise
-        if self._askpass_path:
-            os.remove(self._askpass_path)
+        finally:
+            self._rm(askpass)
         log.info("Cloned %s@%s -> %s (branch %s)", full_name, base_ref, workspace, branch_name)
         return workspace
+
+    @staticmethod
+    def _add_git_excludes(workspace: str) -> None:
+        exclude = os.path.join(workspace, ".git", "info", "exclude")
+        try:
+            with open(exclude, "a", encoding="utf-8") as fh:
+                fh.write("\n.agent-tmp/\n")
+        except Exception as e:
+            log.warning("could not write git excludes in %s: %s", workspace, e)
 
     def commit_all(self, workspace: str, message: str) -> bool:
         self._run(["git", "-C", workspace, "add", "-A"])
@@ -251,15 +266,14 @@ class GitHubClient:
 
     def push(self, full_name: str, workspace: str, branch_name: str) -> None:
         url = self.repo_url(full_name)
-        git_env = self._git_env()
+        git_env, askpass = self._make_git_env()
         try:
             self._run(
                 ["git", "-C", workspace, "push", "--quiet", url, f"HEAD:{branch_name}"],
                 env=git_env,
             )
         finally:
-            if self._askpass_path:
-                os.remove(self._askpass_path)
+            self._rm(askpass)
 
     def create_pr(
         self, full_name: str, head: str, base: str, title: str, body: str
