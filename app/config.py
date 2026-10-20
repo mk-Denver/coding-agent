@@ -22,6 +22,7 @@ class Settings:
     # LLM
     openrouter_api_key: str = field(default="", repr=False)
     openrouter_model: str = "openrouter/auto"
+    intent_model: str = ""
 
     # GitHub
     github_token: str = field(default="", repr=False)
@@ -39,6 +40,7 @@ class Settings:
         return cls(
             openrouter_api_key=_get("OPENROUTER_API_KEY"),
             openrouter_model=_get("OPENROUTER_MODEL", "openrouter/auto"),
+            intent_model=_get("INTENT_MODEL"),
             github_token=_get("GITHUB_TOKEN"),
             github_webhook_secret=_get("GITHUB_WEBHOOK_SECRET"),
             telegram_bot_token=_get("TELEGRAM_BOT_TOKEN"),

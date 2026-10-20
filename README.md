@@ -24,6 +24,10 @@ Triggers:
 - **Telegram**: send `/fix <owner/repo> <issue#>`, `/review <owner/repo> <pr#>`,
   `/answer <owner/repo> <issue#>`. The agent sends progress updates to your chat.
   Use `/tasks` to see active and recent task progress.
+  You can also type naturally: “fix issue 5 in owner/repo”, “review https://github.com/owner/repo/pull/9”,
+  or “why is issue 3 failing?” — a small intent-router LLM call maps the wording onto one of the three
+  task types and remembers the last repo so short follow-ups work.
+  Optionally set `INTENT_MODEL` to route with a cheaper model than `OPENROUTER_MODEL`.
 
 ## Project layout
 
