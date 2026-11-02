@@ -450,6 +450,7 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                 return err
             try:
                 current = url
+                seen: set[str] = {current}
                 with httpx.Client(timeout=30, follow_redirects=False) as c:
                     for _ in range(_MAX_FETCH_HOPS):
                         r = c.get(current, headers={"User-Agent": "Mozilla/5.0"})
@@ -459,6 +460,11 @@ def make_executor(ctx: ToolContext) -> Callable[[str, dict[str, Any]], str]:
                         err = _url_error(current)
                         if err:
                             return f"error: redirect target is not allowed: {current}"
+                        if current in seen:
+                            return "error: redirect loop detected"
+                        seen.add(current)
+                    if r.is_redirect:
+                        return "error: too many redirects"
                 r.raise_for_status()
                 text = r.text
                 text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)

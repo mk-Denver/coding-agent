@@ -220,10 +220,20 @@ class GitHubClient:
         data = r.json()
         if data.get("type") != "file":
             raise RuntimeError(f"unexpected content type for {path}: {data.get('type')}")
-        content = data.get("content", "")
+        content = data.get("content")
         if data.get("encoding") == "base64":
-            return base64.b64decode(content).decode("utf-8", errors="replace")
-        return content
+            if content:
+                return base64.b64decode(content).decode("utf-8", errors="replace")
+            # content is absent/empty: an empty file, or a truncated payload for
+            # large files (> ~1 MB) where GitHub sends content=null. Fall back to
+            # the raw download URL so we don't crash on base64.b64decode(None).
+            download_url = data.get("download_url")
+            if download_url:
+                raw = self.http.get(download_url)
+                raw.raise_for_status()
+                return raw.text
+            return ""
+        return content or ""
 
     # ---- git operations (clone/branch/commit/push) ---------------------
     def clone(
